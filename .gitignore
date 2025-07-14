@@ -1,0 +1,6 @@
+HIGGS.csv
+data.csv
+model.pkl
+predictions_mpi.csv
+predictions_parallel.csv
+predictions_serial.csv
