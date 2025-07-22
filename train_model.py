@@ -1,14 +1,34 @@
-import pandas as pd
-import joblib
-import pickle
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, classification_report
-from sklearn.preprocessing import StandardScaler
-from imblearn.over_sampling import SMOTE  # Optional, for balancing classes
-from tqdm import tqdm
-import warnings
 import os
+import warnings
+import pickle
+import joblib
+
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+from sklearn.naive_bayes import GaussianNB
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.ensemble import (
+    AdaBoostClassifier,
+    GradientBoostingClassifier,
+    BaggingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.mixture import GaussianMixture
+from sklearn.cluster import KMeans, SpectralClustering, AffinityPropagation
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    adjusted_rand_score,
+    homogeneity_score,
+)
+from imblearn.over_sampling import SMOTE
 
 def check_class_imbalance(y, label="Dataset"):
     print(f"\n==== Class Frequency in {label} ====")
@@ -20,10 +40,10 @@ def main():
     warnings.filterwarnings("ignore")
 
     # ========== CONFIG ==========
-    DATA_PATH = 'E:/HPC-ML/q/HIGGS.csv'
-    SUBSET_SIZE = 100_000     # Adjust as needed
-    TARGET_COL = 0
-    USE_SMOTE = False         # Set to True if you want to balance with SMOTE
+    DATA_PATH    = 'D:/HPC-ML/HIGGS.csv'
+    SUBSET_SIZE  = 100_000       # adjust as needed
+    TARGET_COL   = 0
+    USE_SMOTE    = False         # balance train set?
     RANDOM_STATE = 42
     # ============================
 
@@ -34,67 +54,81 @@ def main():
     y = df[TARGET_COL].astype(int)
     X = df.drop(columns=[TARGET_COL])
 
-    # Check imbalance in full subset
     check_class_imbalance(y, "Full Subset")
 
-    non_numeric = X.select_dtypes(include=['object', 'category']).columns.tolist()
+    # all features must be numeric
+    non_numeric = X.select_dtypes(include=['object','category']).columns.tolist()
     if non_numeric:
-        raise ValueError(f"Found non-numeric columns in features: {non_numeric}")
+        raise ValueError(f"Found non-numeric columns: {non_numeric}")
 
-    print("🔀 Splitting train/val (stratified)...")
+    print("🔀 Splitting train/val (stratified)…")
     X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
+        X, y, test_size=0.2, stratify=y, random_state=RANDOM_STATE
     )
+    check_class_imbalance(y_train, "Train Set")
+    check_class_imbalance(y_val,   "Validation Set")
 
-    # Check imbalance in train and validation sets
-    check_class_imbalance(pd.Series(y_train), "Train Set")
-    check_class_imbalance(pd.Series(y_val), "Validation Set")
-
-    print("📊 Normalizing features...")
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val = scaler.transform(X_val)
+    print("📊 Scaling features…")
+    scaler     = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train)
+    X_val_sc   = scaler.transform(X_val)
 
     if USE_SMOTE:
-        print("⚖️ Applying SMOTE to balance classes...")
-        smote = SMOTE(random_state=RANDOM_STATE)
-        X_train, y_train = smote.fit_resample(X_train, y_train)
-        # Check imbalance after SMOTE
-        check_class_imbalance(pd.Series(y_train), "Train Set After SMOTE")
+        print("⚖️  Applying SMOTE…")
+        sm = SMOTE(random_state=RANDOM_STATE)
+        X_train_sc, y_train = sm.fit_resample(X_train_sc, y_train)
+        check_class_imbalance(y_train, "Train After SMOTE")
 
-    max_trees = 50
-    patience = 5
-    best_acc = 0.0
-    no_improve = 0
-    best_model = None
-    print("⚙️ Training RandomForestClassifier (with early stopping)...")
+    # === Supervised classifiers ===
+    classifiers = {
+        "Naive Bayes"       : GaussianNB(),
+        "Decision Tree"     : DecisionTreeClassifier(random_state=RANDOM_STATE),
+        "K-Nearest Neighbors": KNeighborsClassifier(),
+        "Support Vector Machine": SVC(random_state=RANDOM_STATE),
+        "AdaBoost"          : AdaBoostClassifier(random_state=RANDOM_STATE),
+        "Gradient Boosting" : GradientBoostingClassifier(random_state=RANDOM_STATE),
+        "Bagging": BaggingClassifier(
+    estimator=DecisionTreeClassifier(),
+    n_estimators=10,
+    random_state=RANDOM_STATE
+),
+        "Random Forest"     : RandomForestClassifier(random_state=RANDOM_STATE),
+    }
 
-    for n in tqdm(range(1, max_trees + 1), desc="n_estimators"):
-        model = RandomForestClassifier(
-            n_estimators=n,
-            n_jobs=-1,
-            random_state=RANDOM_STATE
-        )
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_val)
-        acc = accuracy_score(y_val, y_pred)
+    print("\n⚙️  Training & evaluating classifiers:")
+    results = {}
+    for name, clf in classifiers.items():
+        print(f"\n>> {name}")
+        clf.fit(X_train_sc, y_train)
+        y_pred = clf.predict(X_val_sc)
+        acc    = accuracy_score(y_val, y_pred)
+        print(f"  • Accuracy: {acc:.4f}")
+        print(classification_report(y_val, y_pred, digits=3))
+        results[name] = acc
+        # optionally save each model:
+        with open(f"{name.replace(' ','_')}.pkl", "wb") as f:
+            pickle.dump(clf, f)
 
-        if acc > best_acc:
-            best_acc = acc
-            no_improve = 0
-            best_model = pickle.dumps(model)
-        else:
-            no_improve += 1
+    # === Unsupervised clusterers ===
+    n_clusters = len(np.unique(y_train))
+    clusterers = {
+        "KMeans"           : KMeans(n_clusters=n_clusters, random_state=RANDOM_STATE),
+        "SpectralClustering": SpectralClustering(n_clusters=n_clusters, random_state=RANDOM_STATE),
+        "AffinityPropagation": AffinityPropagation(),
+        "Gaussian Mixture": GaussianMixture(n_components=n_clusters, random_state=RANDOM_STATE),
+    }
 
-        if no_improve >= patience:
-            print(f"⏹️ Early stopping at {n} trees. Best val accuracy: {best_acc:.4f}")
-            break
+    print("\n⚙️  Fitting & evaluating clusterers (on VAL set):")
+    for name, clust in clusterers.items():
+        print(f"\n>> {name}")
+        # fit & predict cluster labels on validation features
+        labs = clust.fit_predict(X_val_sc)
+        ari  = adjusted_rand_score(y_val, labs)
+        homo = homogeneity_score(y_val, labs)
+        print(f"  • Adjusted Rand Index: {ari:.4f}")
+        print(f"  • Homogeneity Score:   {homo:.4f}")
 
-    final_model = pickle.loads(best_model)
-    out_path = "model_subset.pkl"
-    joblib.dump(final_model, out_path)
-    print(f"✅ Model saved to {out_path} | Best accuracy: {best_acc:.4f}")
-    print(classification_report(y_val, final_model.predict(X_val), digits=3))
+    print("\n✅ All models trained and evaluated.")
 
 if __name__ == "__main__":
     main()
